@@ -1,0 +1,6 @@
+{
+  "name": "Generador de Video y Audio",
+  "description": "Herramienta completa de producción multimedia que genera audio y video a partir de texto e imágenes, con controles avanzados de velocidad, tono, sub-bajo y ruidos de fondo.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
