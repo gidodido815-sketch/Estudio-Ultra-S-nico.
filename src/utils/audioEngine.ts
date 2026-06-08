@@ -416,6 +416,10 @@ export function buildAudioSystem(noiseType: BackgroundNoiseType, noiseVol: numbe
   const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
   const ctx = new AudioContextClass();
   
+  if (ctx.state === "suspended") {
+    ctx.resume().catch(e => console.warn("Failed automatic context resumption in buildAudioSystem:", e));
+  }
+  
   const destination = ctx.createMediaStreamDestination();
   
   const masterGain = ctx.createGain();

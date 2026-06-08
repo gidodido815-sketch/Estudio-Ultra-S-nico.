@@ -451,6 +451,9 @@ export default function App() {
       
       // 1. Initialize custom sound nodes first
       const graph = buildAudioSystem(config.backgroundNoise, config.backgroundNoiseVolume);
+      if (graph.ctx.state === "suspended") {
+        await graph.ctx.resume().catch(e => console.warn("Failed to resume preview context:", e));
+      }
       
       // Mute the background noise gain temporarily so it doesn't hum while fetching synthesis
       const originalNoiseVol = graph.noiseGain.gain.value;
@@ -573,10 +576,15 @@ export default function App() {
 
     setIsRecording(true);
     setRecordingProgress(5);
+    
+    let progressInterval: any = null;
 
     try {
       // Warm up soundscapes
       const graph = buildAudioSystem(config.backgroundNoise, config.backgroundNoiseVolume);
+      if (graph.ctx.state === "suspended") {
+        await graph.ctx.resume().catch(e => console.warn("Failed to resume record context:", e));
+      }
       
       if (config.subBassSustained) {
         addSubBassSynthesizer(graph, config.subBassIntensity);
@@ -597,12 +605,8 @@ export default function App() {
       let audioBuffer: AudioBuffer | null = null;
       let usedGemini = false;
       
-      try {
-        audioBuffer = await synthesizeScriptToAudioBuffer(scriptText, config.voiceId, graph.ctx);
-        usedGemini = true;
-      } catch (err) {
-        console.warn("Fallback to WebSpeech active inside production recorder:", err);
-      }
+      audioBuffer = await synthesizeScriptToAudioBuffer(scriptText, config.voiceId, graph.ctx);
+      usedGemini = true;
 
       setRecordingProgress(30);
 
@@ -687,6 +691,11 @@ export default function App() {
       const finishRecording = () => {
         if (recorderFinished) return;
         recorderFinished = true;
+        
+        if (progressInterval) {
+          clearInterval(progressInterval);
+        }
+
         try {
           if (recorder.state !== "inactive") {
             recorder.stop();
@@ -799,9 +808,11 @@ export default function App() {
         sourceNode.connect(graph.voiceGain);
         sourceNode.start(0);
 
-        // Auto trigger stop when vocal track ends
+        // Auto trigger stop when vocal track ends with a small safety delay so the audio trail / ending isn't cut off
         sourceNode.onended = () => {
-          finishRecording();
+          setTimeout(() => {
+            finishRecording();
+          }, 800);
         };
       } else {
         // Trigger WebSpeech API speaking concurrently as fallback
@@ -818,7 +829,9 @@ export default function App() {
             }
           };
           utterance.onend = () => {
-            finishRecording();
+            setTimeout(() => {
+              finishRecording();
+            }, 800);
           };
 
           window.speechSynthesis.speak(utterance);
@@ -831,7 +844,7 @@ export default function App() {
       // progress simulation bar
       const intervalSecs = 0.5;
       let currentSecs = 0;
-      const progressInterval = setInterval(() => {
+      progressInterval = setInterval(() => {
         currentSecs += intervalSecs;
         const ratio = currentSecs / recordDurationSec;
         const percentage = Math.min(30 + Math.round(ratio * 65), 95);
@@ -840,13 +853,15 @@ export default function App() {
         // mouth visual vibrations
         triggerProceduralVoicePulse(0.25);
 
-        if (currentSecs >= recordDurationSec) {
+        // We add a safety cushion of 2.0 seconds to make sure timers don't cut off audio/video prematurely.
+        if (currentSecs >= recordDurationSec + 2.0) {
           clearInterval(progressInterval);
           finishRecording();
         }
       }, intervalSecs * 1000);
 
     } catch (e: any) {
+      stopPreviewPlayback();
       setIsRecording(false);
       setIsPlayingPreview(false);
       showAlert("error", "Error durante el renderizado de la cinta: " + e.message);
@@ -1005,6 +1020,9 @@ export default function App() {
           let recordingTimeout: any;
           let recorder: MediaRecorder;
           const graph = buildAudioSystem(config.backgroundNoise, config.backgroundNoiseVolume);
+          if (graph.ctx.state === "suspended") {
+            await graph.ctx.resume().catch(e => console.warn("Failed to resume batch record context:", e));
+          }
 
           let batchAudioBuffer: AudioBuffer | null = null;
           if (rawAudioBytes && usedGemini) {
@@ -1185,7 +1203,9 @@ export default function App() {
               sourceNode.start(0);
 
               sourceNode.onended = () => {
-                finishItemRecording();
+                setTimeout(() => {
+                  finishItemRecording();
+                }, 800);
               };
             } else {
               // Local fallback Speech
@@ -1202,7 +1222,9 @@ export default function App() {
                   }
                 };
                 utterance.onend = () => {
-                  finishItemRecording();
+                  setTimeout(() => {
+                    finishItemRecording();
+                  }, 800);
                 };
 
                 window.speechSynthesis.speak(utterance);
@@ -1230,7 +1252,7 @@ export default function App() {
             recordingTimeout = setTimeout(() => {
               clearInterval(progressInterval);
               finishItemRecording();
-            }, calculatedDurationSec * 1050);
+            }, (calculatedDurationSec + 2.0) * 1000);
 
           } catch (eOuter) {
             cleanup();

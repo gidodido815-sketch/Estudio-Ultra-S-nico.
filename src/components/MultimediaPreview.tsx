@@ -39,6 +39,8 @@ export default function MultimediaPreview({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const imageObjRef = useRef<HTMLImageElement | null>(null);
   const videoObjRef = useRef<HTMLVideoElement | null>(null);
+  const lastLoadedImageRef = useRef<HTMLImageElement | null>(null);
+  const lastLoadedVideoRef = useRef<HTMLVideoElement | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   
   // Local dimensions to fit container
@@ -85,10 +87,13 @@ export default function MultimediaPreview({
     return () => clearInterval(timer);
   }, [isPlaying, wordsList, config.speed]);
 
-  // Handle image loading
+  // Handle image loading without black gaps or transitions glitches
   useEffect(() => {
     if (!imageUrl) {
-      imageObjRef.current = null;
+      if (!videoUrl) {
+        imageObjRef.current = null;
+        lastLoadedImageRef.current = null;
+      }
       return;
     }
 
@@ -98,15 +103,28 @@ export default function MultimediaPreview({
     img.src = imageUrl;
     img.onload = () => {
       imageObjRef.current = img;
+      lastLoadedImageRef.current = img;
+      lastLoadedVideoRef.current = null;
+      // Only nullify the active video when the new image is fully loaded
+      if (!videoUrl) {
+        if (videoObjRef.current) {
+          videoObjRef.current.pause();
+        }
+        videoObjRef.current = null;
+      }
     };
-  }, [imageUrl]);
+  }, [imageUrl, videoUrl]);
 
-  // Handle video loading
+  // Handle video loading without black gaps or transition glitches
   useEffect(() => {
     if (!videoUrl) {
-      if (videoObjRef.current) {
-        videoObjRef.current.pause();
-        videoObjRef.current = null;
+      // Only clear video when we have a ready alternative or are fully unloading
+      if (!imageUrl || imageObjRef.current) {
+        if (videoObjRef.current) {
+          videoObjRef.current.pause();
+          videoObjRef.current = null;
+        }
+        lastLoadedVideoRef.current = null;
       }
       return;
     }
@@ -118,11 +136,37 @@ export default function MultimediaPreview({
     video.loop = true;
     video.muted = true;
     video.playsInline = true;
-    videoObjRef.current = video;
+
+    let isVideoReady = false;
+    const handleCanPlay = () => {
+      if (isVideoReady) return;
+      isVideoReady = true;
+      videoObjRef.current = video;
+      lastLoadedVideoRef.current = video;
+      lastLoadedImageRef.current = null;
+      // Once video is ready, safely wipe the static image reference to handoff instantly
+      imageObjRef.current = null;
+      if (isPlaying) {
+        video.play().catch(() => {});
+      }
+    };
+
+    video.addEventListener("canplay", handleCanPlay);
+    video.addEventListener("canplaythrough", handleCanPlay);
+    video.addEventListener("loadeddata", handleCanPlay);
+
+    video.load();
 
     if (isPlaying) {
       video.play().catch(() => {});
     }
+
+    return () => {
+      video.removeEventListener("canplay", handleCanPlay);
+      video.removeEventListener("canplaythrough", handleCanPlay);
+      video.removeEventListener("loadeddata", handleCanPlay);
+      video.pause();
+    };
   }, [videoUrl, isPlaying]);
 
   // Sync video play/pause with isPlaying
@@ -137,7 +181,7 @@ export default function MultimediaPreview({
       video.pause();
       video.currentTime = 0;
     }
-  }, [isPlaying]);
+  }, [isPlaying, videoObjRef.current]);
 
   // Dynamic container resizing for canvas aspect ratio
   useEffect(() => {
@@ -196,68 +240,67 @@ export default function MultimediaPreview({
       let destY = 0;
 
       // 1. Render Background Video or Image
+      let drawn = false;
+
+      // Calculate placement dimensions with optional visual effects
+      let zoom = 1.0;
+      let dx = 0;
+      let dy = 0;
+
+      if (config.visualEffect === "pan-zoom") {
+        zoom = 1.0 + Math.sin(elapsed * 0.05) * 0.06;
+        dx = Math.sin(elapsed * 0.1) * (w * 0.015);
+        dy = Math.cos(elapsed * 0.12) * (h * 0.015);
+      } else if (config.visualEffect === "ripple" && isPlaying) {
+        zoom = 1.02 + Math.abs(Math.sin(elapsed * 4)) * 0.015;
+      }
+
+      destW = w * zoom;
+      destH = h * zoom;
+      destX = (w - destW) / 2 + dx;
+      destY = (h - destH) / 2 + dy;
+
+      // Draw primary active media if ready
       if (videoUrl && videoObjRef.current) {
-        let zoom = 1.0;
-        let dx = 0;
-        let dy = 0;
-
-        if (config.visualEffect === "pan-zoom") {
-          zoom = 1.0 + Math.sin(elapsed * 0.05) * 0.04;
-          dx = Math.sin(elapsed * 0.1) * (w * 0.01);
-          dy = Math.cos(elapsed * 0.12) * (h * 0.01);
-        } else if (config.visualEffect === "ripple" && isPlaying) {
-          zoom = 1.01 + Math.abs(Math.sin(elapsed * 4)) * 0.01;
-        }
-
-        destW = w * zoom;
-        destH = h * zoom;
-        destX = (w - destW) / 2 + dx;
-        destY = (h - destH) / 2 + dy;
-
         try {
           const video = videoObjRef.current;
           if (video.readyState >= 2) {
             ctx.drawImage(video, destX, destY, destW, destH);
-          } else {
-            ctx.fillStyle = "#0a0a0a";
-            ctx.fillRect(0, 0, w, h);
-            ctx.fillStyle = "rgba(163, 163, 163, 0.4)";
-            ctx.font = "italic 11px Inter, sans-serif";
-            ctx.textAlign = "center";
-            ctx.fillText("Inicializando video HD...", w / 2, h / 2);
+            drawn = true;
           }
         } catch (e) {
-          ctx.fillStyle = "#171717";
-          ctx.fillRect(0, 0, w, h);
+          console.warn("Error drawing primary video frame:", e);
         }
-      } else if (imageObjRef.current) {
-        let zoom = 1.0;
-        let dx = 0;
-        let dy = 0;
-
-        if (config.visualEffect === "pan-zoom") {
-          // Subtle circular pan and slow zoom
-          zoom = 1.0 + Math.sin(elapsed * 0.05) * 0.08;
-          dx = Math.sin(elapsed * 0.1) * (w * 0.02);
-          dy = Math.cos(elapsed * 0.12) * (h * 0.02);
-        } else if (config.visualEffect === "ripple" && isPlaying) {
-          // Oscillating visual bounce
-          zoom = 1.02 + Math.abs(Math.sin(elapsed * 4)) * 0.015;
-        }
-
-        destW = w * zoom;
-        destH = h * zoom;
-        destX = (w - destW) / 2 + dx;
-        destY = (h - destH) / 2 + dy;
-
+      } else if (!videoUrl && imageUrl && imageObjRef.current) {
         try {
           ctx.drawImage(imageObjRef.current, destX, destY, destW, destH);
+          drawn = true;
         } catch (e) {
-          // Fallback if image has canvas security restrictions or failed loading
-          ctx.fillStyle = "#171717";
-          ctx.fillRect(0, 0, w, h);
+          console.warn("Error drawing primary image frame:", e);
         }
-      } else {
+      }
+
+      // If active media is not ready/loaded yet, try our smooth cached transitions
+      if (!drawn) {
+        if (lastLoadedVideoRef.current) {
+          try {
+            const video = lastLoadedVideoRef.current;
+            if (video.readyState >= 2) {
+              ctx.drawImage(video, destX, destY, destW, destH);
+              drawn = true;
+            }
+          } catch (e) {}
+        }
+        if (!drawn && lastLoadedImageRef.current) {
+          try {
+            ctx.drawImage(lastLoadedImageRef.current, destX, destY, destW, destH);
+            drawn = true;
+          } catch (e) {}
+        }
+      }
+
+      // Final fallback if absolutely nothing exists or is ready yet (e.g. initial load)
+      if (!drawn) {
         // Aesthetic Gradient if no image
         const grad = ctx.createRadialGradient(w/2, h/2, 50, w/2, h/2, w/1.2);
         grad.addColorStop(0, "#1c1917");
@@ -282,7 +325,7 @@ export default function MultimediaPreview({
         ctx.fillStyle = "rgba(115, 115, 115, 0.4)";
         ctx.font = "italic 11px Inter, sans-serif";
         ctx.textAlign = "center";
-        ctx.fillText("Sube un fondo (Imagen/Video) o genéralo con IA", w / 2, h / 2 - 10);
+        ctx.fillText("Espere, cargando multimedia...", w / 2, h / 2 - 10);
       }
 
       // 2. Visual Effects Additions (e.g. Vignette shadow)
@@ -500,14 +543,26 @@ export default function MultimediaPreview({
       }
 
       // Red loop
-      animationFrameRef.current = requestAnimationFrame(render);
+      if (!isPlaying) {
+        animationFrameRef.current = requestAnimationFrame(render);
+      }
     };
 
-    render();
+    // Use extreme high-precision steady setInterval loop during active recording/playback 
+    // to shield the canvas feed from browser background-tab throttling (requestAnimationFrame drops to 0 FPS otherwise)
+    let fallbackInterval: any = null;
+    if (isPlaying) {
+      fallbackInterval = setInterval(render, 1000 / 30);
+    } else {
+      render();
+    }
 
     return () => {
       if (animationFrameRef.current) {
         cancelAnimationFrame(animationFrameRef.current);
+      }
+      if (fallbackInterval) {
+        clearInterval(fallbackInterval);
       }
     };
   }, [dimensions, imageUrl, isPlaying, config, analyserNode, wordsList, currentWordIndex]);
